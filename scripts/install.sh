@@ -1,30 +1,66 @@
 #!/bin/bash
-# DJ Remix AI — Installation Script
+# DJ Remix AI — Installation Script (venv-based)
 
 set -e
 
-echo "🎧 Installing DJ Remix AI..."
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+PROJECT_DIR="$(dirname "$SCRIPT_DIR")"
+cd "$PROJECT_DIR"
 
-# Check Python version
-python3 --version || { echo "Python 3.10+ required"; exit 1; }
+echo "=== DJ Remix AI — Setup ==="
 
-# Create virtual environment
-python3 -m venv venv
-source venv/bin/activate
+# Check Python
+PYTHON_CMD=""
+if command -v python &> /dev/null; then
+    PYTHON_CMD="python"
+elif command -v python3 &> /dev/null; then
+    PYTHON_CMD="python3"
+else
+    echo "Error: Python not found. Install Python 3.10+."
+    exit 1
+fi
 
-# Install dependencies
-pip install --upgrade pip
+echo "Using: $($PYTHON_CMD --version)"
+
+# Create venv if it doesn't exist
+if [ ! -d "venv" ]; then
+    echo "Creating virtual environment..."
+    $PYTHON_CMD -m venv venv
+fi
+
+# Activate venv (cross-platform)
+if [ -f "venv/Scripts/activate" ]; then
+    source venv/Scripts/activate  # Windows Git Bash
+elif [ -f "venv/bin/activate" ]; then
+    source venv/bin/activate      # Linux/Mac
+fi
+
+# Upgrade pip
+python -m pip install --upgrade pip
+
+# Install all dependencies from frozen requirements
+echo "Installing dependencies..."
 pip install -r requirements.txt
 
-# Install yt-dlp
-pip install yt-dlp
-
 # Check ffmpeg
-ffmpeg -version > /dev/null 2>&1 || { echo "ffmpeg not found. Please install ffmpeg."; exit 1; }
+if command -v ffmpeg &> /dev/null; then
+    echo "ffmpeg found: $(ffmpeg -version 2>&1 | head -1)"
+else
+    echo ""
+    echo "WARNING: ffmpeg not found!"
+    echo "  Windows: choco install ffmpeg  OR  scoop install ffmpeg"
+    echo "  Mac:     brew install ffmpeg"
+    echo "  Linux:   sudo apt install ffmpeg"
+fi
 
 # Create directories
 mkdir -p uploads output models
 
 echo ""
-echo "Installation complete!"
-echo "Run the server: uvicorn backend.main:app --reload"
+echo "=== Setup complete! ==="
+echo ""
+echo "To run the server:"
+echo "  bash run.sh"
+echo ""
+echo "To download AI models (~2GB):"
+echo "  bash scripts/download_models.sh"
