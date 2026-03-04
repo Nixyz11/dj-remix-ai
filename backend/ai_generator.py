@@ -1,10 +1,12 @@
 """AI music generation using Facebook's MusicGen via HuggingFace Transformers."""
 
+import logging
 import torch
 import numpy as np
 import soundfile as sf
 from pathlib import Path
-from typing import Optional
+
+log = logging.getLogger(__name__)
 
 
 class AIGenerator:
@@ -16,24 +18,41 @@ class AIGenerator:
     - Additional melodic layers
     """
 
-    def __init__(self, model_name: str = "facebook/musicgen-small"):
+    SAMPLE_RATE = 32000  # MusicGen native output rate
+
+    def __init__(self, model_name: str = "facebook/musicgen-small", enabled: bool = True):
         self.model_name = model_name
         self.model = None
         self.processor = None
+        self.enabled = enabled
         self.device = "cuda" if torch.cuda.is_available() else "cpu"
+        self._load_failed = False
+
+    def is_available(self) -> bool:
+        """Check if AI generation is available and enabled."""
+        if not self.enabled or self._load_failed:
+            return False
+        return True
 
     def _load_model(self):
         """Lazy-load the model on first use."""
         if self.model is not None:
             return
+        if self._load_failed:
+            raise RuntimeError("Model previously failed to load")
 
-        from transformers import AutoProcessor, MusicgenForConditionalGeneration
+        try:
+            from transformers import AutoProcessor, MusicgenForConditionalGeneration
 
-        print(f"Loading MusicGen model ({self.model_name}) on {self.device}...")
-        self.processor = AutoProcessor.from_pretrained(self.model_name)
-        self.model = MusicgenForConditionalGeneration.from_pretrained(self.model_name)
-        self.model.to(self.device)
-        print("MusicGen loaded successfully.")
+            log.info("Loading MusicGen model (%s) on %s...", self.model_name, self.device)
+            self.processor = AutoProcessor.from_pretrained(self.model_name)
+            self.model = MusicgenForConditionalGeneration.from_pretrained(self.model_name)
+            self.model.to(self.device)
+            log.info("MusicGen loaded successfully.")
+        except Exception as e:
+            self._load_failed = True
+            log.error("Failed to load MusicGen: %s", e)
+            raise
 
     def generate(
         self,
@@ -44,15 +63,11 @@ class AIGenerator:
     ) -> np.ndarray:
         """Generate audio from a text prompt.
 
-        Args:
-            prompt: Text description (e.g. "energetic EDM drop with heavy bass")
-            duration_seconds: Length of generated audio (max ~30s for small model)
-            guidance_scale: How closely to follow the prompt (higher = more faithful)
-            temperature: Randomness (higher = more creative)
-
-        Returns:
-            numpy array of audio samples at 32kHz
+        Returns numpy array of audio samples at 32kHz.
         """
+        if not self.enabled:
+            raise RuntimeError("AI generation is disabled")
+
         self._load_model()
 
         inputs = self.processor(
@@ -64,6 +79,7 @@ class AIGenerator:
         # MusicGen generates at 32kHz, ~50 tokens per second
         max_new_tokens = int(duration_seconds * 50)
 
+        log.info("Generating %ds audio: '%s'", duration_seconds, prompt[:80])
         with torch.no_grad():
             audio_values = self.model.generate(
                 **inputs,
@@ -72,8 +88,8 @@ class AIGenerator:
                 temperature=temperature,
             )
 
-        # Convert to numpy
         audio = audio_values[0, 0].cpu().numpy()
+        log.info("Generated %d samples (%.1fs)", len(audio), len(audio) / self.SAMPLE_RATE)
         return audio
 
     def generate_remix_element(
@@ -84,22 +100,7 @@ class AIGenerator:
         key: str = "C minor",
         duration_seconds: float = 8,
     ) -> np.ndarray:
-        """Generate a specific remix element conditioned on the track analysis.
-
-        Args:
-            element_type: One of "drop", "buildup", "transition", "beat", "fill", "bass_line"
-            style: Remix style (party, edm, chill, bass_heavy)
-            bpm: Target BPM
-            key: Musical key
-            duration_seconds: Length
-        """
-        style_descriptions = {
-            "party": "energetic party music with driving beats",
-            "edm": "electronic dance music with synthesizers and heavy drops",
-            "chill": "chill downtempo electronic with smooth pads",
-            "bass_heavy": "heavy bass music with sub-bass drops and wobble",
-        }
-
+        """Generate a specific remix element conditioned on the track analysis."""
         element_descriptions = {
             "drop": f"powerful {style} drop at {bpm} BPM in {key}, heavy kick drums and bass",
             "buildup": f"rising {style} buildup tension at {bpm} BPM in {key}, snare rolls and risers",
@@ -109,13 +110,12 @@ class AIGenerator:
             "bass_line": f"deep bass line at {bpm} BPM in {key}, {style} style",
         }
 
-        style_desc = style_descriptions.get(style, style_descriptions["party"])
-        prompt = element_descriptions.get(element_type, f"{style_desc} at {bpm} BPM in {key}")
-
-        return self.generate(
-            prompt=prompt,
-            duration_seconds=duration_seconds,
+        prompt = element_descriptions.get(
+            element_type,
+            f"energetic {style} music at {bpm} BPM in {key}"
         )
+
+        return self.generate(prompt=prompt, duration_seconds=duration_seconds)
 
     def save_audio(self, audio: np.ndarray, output_path: str, sr: int = 32000):
         """Save generated audio to file."""

@@ -1,24 +1,30 @@
 """Audio analysis — BPM detection, key estimation, energy profiling."""
 
+import logging
 import librosa
 import numpy as np
 from typing import Dict, Any
+
+log = logging.getLogger(__name__)
 
 
 class AudioAnalyzer:
     """Analyzes audio files for BPM, musical key, energy, and structure."""
 
-    # Pitch class mapping for key detection
     KEY_NAMES = [
         "C", "C#", "D", "D#", "E", "F",
         "F#", "G", "G#", "A", "A#", "B"
     ]
 
-    def analyze(self, audio_path: str) -> Dict[str, Any]:
-        """Full analysis of an audio track.
+    # Krumhansl-Schmuckler key profiles
+    MAJOR_PROFILE = np.array([6.35, 2.23, 3.48, 2.33, 4.38, 4.09,
+                               2.52, 5.19, 2.39, 3.66, 2.29, 2.88])
+    MINOR_PROFILE = np.array([6.33, 2.68, 3.52, 5.38, 2.60, 3.53,
+                               2.54, 4.75, 3.98, 2.69, 3.34, 3.17])
 
-        Returns dict with: bpm, key, energy_profile, duration, onset_times, sections
-        """
+    def analyze(self, audio_path: str) -> Dict[str, Any]:
+        """Full analysis of an audio track."""
+        log.info("Analyzing: %s", audio_path)
         y, sr = librosa.load(audio_path, sr=22050, mono=True)
 
         bpm = self._detect_bpm(y, sr)
@@ -27,18 +33,37 @@ class AudioAnalyzer:
         onsets = self._detect_onsets(y, sr)
         duration = float(librosa.get_duration(y=y, sr=sr))
         sections = self._detect_sections(y, sr)
+        avg_energy = float(np.mean(energy_profile)) if energy_profile else 0.0
 
-        return {
+        result = {
             "bpm": round(bpm, 1),
             "key": key,
-            "mode": mode,  # "major" or "minor"
+            "mode": mode,
             "key_full": f"{key} {mode}",
             "duration_seconds": round(duration, 2),
             "energy_profile": energy_profile,
+            "average_energy": round(avg_energy, 4),
             "onset_count": len(onsets),
-            "onset_times": onsets[:50],  # First 50 onsets
+            "onset_times": onsets[:50],
             "sections": sections,
             "sample_rate": sr,
+        }
+        log.info("Analysis complete: %.1f BPM, %s %s, %.1fs duration",
+                 bpm, key, mode, duration)
+        return result
+
+    def analyze_quick(self, audio_path: str) -> Dict[str, Any]:
+        """Quick analysis — BPM and key only, no sections/onsets."""
+        y, sr = librosa.load(audio_path, sr=22050, mono=True)
+        bpm = self._detect_bpm(y, sr)
+        key, mode = self._detect_key(y, sr)
+        duration = float(librosa.get_duration(y=y, sr=sr))
+        return {
+            "bpm": round(bpm, 1),
+            "key": key,
+            "mode": mode,
+            "key_full": f"{key} {mode}",
+            "duration_seconds": round(duration, 2),
         }
 
     def _detect_bpm(self, y: np.ndarray, sr: int) -> float:
@@ -53,20 +78,14 @@ class AudioAnalyzer:
         chroma = librosa.feature.chroma_cqt(y=y, sr=sr)
         chroma_mean = np.mean(chroma, axis=1)
 
-        # Krumhansl-Schmuckler key profiles
-        major_profile = np.array([6.35, 2.23, 3.48, 2.33, 4.38, 4.09,
-                                   2.52, 5.19, 2.39, 3.66, 2.29, 2.88])
-        minor_profile = np.array([6.33, 2.68, 3.52, 5.38, 2.60, 3.53,
-                                   2.54, 4.75, 3.98, 2.69, 3.34, 3.17])
-
         best_corr = -1
         best_key = 0
         best_mode = "major"
 
         for i in range(12):
             shifted = np.roll(chroma_mean, -i)
-            corr_major = float(np.corrcoef(shifted, major_profile)[0, 1])
-            corr_minor = float(np.corrcoef(shifted, minor_profile)[0, 1])
+            corr_major = float(np.corrcoef(shifted, self.MAJOR_PROFILE)[0, 1])
+            corr_minor = float(np.corrcoef(shifted, self.MINOR_PROFILE)[0, 1])
 
             if corr_major > best_corr:
                 best_corr = corr_major
@@ -81,8 +100,11 @@ class AudioAnalyzer:
 
     def _energy_profile(self, y: np.ndarray, sr: int) -> list:
         """Compute RMS energy over time, sampled at ~1 per second."""
-        hop_length = sr  # 1 second windows
-        rms = librosa.feature.rms(y=y, hop_length=hop_length, frame_length=sr * 2)[0]
+        hop_length = sr
+        frame_length = min(sr * 2, len(y))
+        if frame_length < 1:
+            return []
+        rms = librosa.feature.rms(y=y, hop_length=hop_length, frame_length=frame_length)[0]
         return [round(float(x), 4) for x in rms]
 
     def _detect_onsets(self, y: np.ndarray, sr: int) -> list:
@@ -92,10 +114,16 @@ class AudioAnalyzer:
         return [round(float(t), 3) for t in onset_times]
 
     def _detect_sections(self, y: np.ndarray, sr: int) -> list:
-        """Simple section detection based on spectral clustering."""
-        # Use spectral features to find structural boundaries
+        """Section detection based on spectral clustering."""
+        duration = len(y) / sr
+        # Adjust number of sections based on track length
+        n_sections = max(2, min(int(duration / 15), 10))
+
         mfcc = librosa.feature.mfcc(y=y, sr=sr, n_mfcc=13)
-        bounds = librosa.segment.agglomerative(mfcc, k=6)
+        if mfcc.shape[1] < n_sections:
+            return [{"start": 0.0, "label": "section_1"}]
+
+        bounds = librosa.segment.agglomerative(mfcc, k=n_sections)
         bound_times = librosa.frames_to_time(bounds, sr=sr)
 
         sections = []

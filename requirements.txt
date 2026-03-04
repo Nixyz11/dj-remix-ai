@@ -69,6 +69,7 @@ threadpoolctl==3.6.0
 tokenizers==0.22.2
 torch==2.10.0
 torchaudio==2.10.0
+torchcodec==0.10.0
 tqdm==4.67.3
 transformers==5.2.0
 treetable==0.2.6
